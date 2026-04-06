@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using MySqlConnector;
 
 namespace CopyMysqlData;
@@ -12,6 +13,100 @@ public sealed class TableCopier
     {
         _sourceConnectionString = sourceConnectionString;
         _destinationConnectionString = destinationConnectionString;
+    }
+
+    public Task<int> ExecuteAsync(
+        string command,
+        string[] tableNames,
+        bool truncate = false,
+        bool preserveIdentity = true,
+        CancellationToken cancellationToken = default)
+    {
+        return command.ToLowerInvariant() switch
+        {
+            "copy-tables" => ExecuteCopyTablesAsync(tableNames, truncate, preserveIdentity, cancellationToken),
+            "check-data"  => ExecuteCheckDataAsync(tableNames, cancellationToken),
+            _ => throw new ArgumentException($"Unknown command '{command}'.")
+        };
+    }
+
+    private async Task<int> ExecuteCopyTablesAsync(
+        string[] tableNames,
+        bool truncate,
+        bool preserveIdentity,
+        CancellationToken cancellationToken)
+    {
+        int exitCode = 0;
+        int totalRowsCopied = 0;
+        var stopwatch = Stopwatch.StartNew();
+
+        foreach (var tableName in tableNames)
+        {
+            Console.WriteLine($"\nCopying table `{tableName}`...\n");
+            try
+            {
+                int rowsCopied = await CopyTableAsync(tableName, truncate, preserveIdentity, cancellationToken);
+                totalRowsCopied += rowsCopied;
+                Console.WriteLine($"  Table `{tableName}`: {rowsCopied} row(s) copied.");
+            }
+            catch (MySqlException ex)
+            {
+                Console.Error.WriteLine($"\nMySQL Error [{ex.ErrorCode}] on table `{tableName}`: {ex.Message}");
+                exitCode = 1;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"\nError on table `{tableName}`: {ex.Message}");
+                exitCode = 1;
+            }
+        }
+
+        stopwatch.Stop();
+        Console.WriteLine($"\nDone! {totalRowsCopied} total row(s) copied across {tableNames.Length} table(s) in {stopwatch.Elapsed.TotalSeconds:F2}s.");
+        return exitCode;
+    }
+
+    private async Task<int> ExecuteCheckDataAsync(
+        string[] tableNames,
+        CancellationToken cancellationToken)
+    {
+        int exitCode = 0;
+        var stopwatch = Stopwatch.StartNew();
+
+        foreach (var tableName in tableNames)
+        {
+            Console.WriteLine($"\nChecking table `{tableName}`...");
+            try
+            {
+                var result = await CheckTableAsync(tableName, cancellationToken);
+
+                if (!result.HasPrimaryKey)
+                    Console.WriteLine("  (no primary key found \u2014 row-count comparison only)");
+
+                Console.WriteLine($"  Source rows      : {result.SourceRowCount}");
+                Console.WriteLine($"  Destination rows : {result.DestinationRowCount}");
+                Console.WriteLine($"  Missing in dest  : {result.MissingInDestination}");
+                Console.WriteLine($"  Extra in dest    : {result.ExtraInDestination}");
+                Console.WriteLine($"  Mismatched rows  : {result.Mismatched}");
+                Console.WriteLine($"  Status           : {(result.IsMatch ? "\u2713 MATCH" : "\u2717 MISMATCH")}");
+
+                if (!result.IsMatch) exitCode = 1;
+            }
+            catch (MySqlException ex)
+            {
+                Console.Error.WriteLine($"\nMySQL Error [{ex.ErrorCode}] on table `{tableName}`: {ex.Message}");
+                exitCode = 1;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"\nError on table `{tableName}`: {ex.Message}");
+                exitCode = 1;
+            }
+        }
+
+        stopwatch.Stop();
+        Console.WriteLine($"\nDone! Checked {tableNames.Length} table(s) in {stopwatch.Elapsed.TotalSeconds:F2}s.");
+        return exitCode;
     }
 
     public async Task<int> CopyTableAsync(
@@ -166,4 +261,175 @@ public sealed class TableCopier
             throw;
         }
     }
+
+    public async Task<TableCheckResult> CheckTableAsync(
+        string tableName,
+        CancellationToken cancellationToken = default)
+    {
+        await using var sourceConn = new MySqlConnection(_sourceConnectionString);
+        await sourceConn.OpenAsync(cancellationToken);
+        await using var destConn = new MySqlConnection(_destinationConnectionString);
+        await destConn.OpenAsync(cancellationToken);
+
+        var pkColumns = await GetPrimaryKeyColumnsAsync(sourceConn, tableName, cancellationToken);
+
+        if (pkColumns.Count == 0)
+        {
+            var srcCount = await GetRowCountAsync(sourceConn, tableName, cancellationToken);
+            var dstCount = await GetRowCountAsync(destConn, tableName, cancellationToken);
+            return new TableCheckResult(tableName, srcCount, dstCount,
+                Math.Max(0, srcCount - dstCount), Math.Max(0, dstCount - srcCount), 0, HasPrimaryKey: false);
+        }
+
+        var orderBy = string.Join(", ", pkColumns.Select(c => $"`{c}`"));
+
+        await using var sourceCmd = sourceConn.CreateCommand();
+        sourceCmd.CommandText = $"SELECT * FROM `{tableName}` ORDER BY {orderBy}";
+        sourceCmd.CommandTimeout = 0;
+
+        await using var destCmd = destConn.CreateCommand();
+        destCmd.CommandText = $"SELECT * FROM `{tableName}` ORDER BY {orderBy}";
+        destCmd.CommandTimeout = 0;
+
+        await using var sourceReader = await sourceCmd.ExecuteReaderAsync(cancellationToken);
+        await using var destReader = await destCmd.ExecuteReaderAsync(cancellationToken);
+
+        var pkIndices = pkColumns
+            .Select(pk => Enumerable.Range(0, sourceReader.FieldCount)
+                .First(i => string.Equals(sourceReader.GetName(i), pk, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        long sourceRowCount = 0, destRowCount = 0;
+        long missingInDest = 0, extraInDest = 0, mismatched = 0;
+
+        object?[]? sourceRow = null, destRow = null;
+
+        if (await sourceReader.ReadAsync(cancellationToken)) { sourceRow = ReadRow(sourceReader); sourceRowCount++; }
+        if (await destReader.ReadAsync(cancellationToken)) { destRow = ReadRow(destReader); destRowCount++; }
+
+        while (sourceRow is not null || destRow is not null)
+        {
+            int cmp;
+            if (sourceRow is null) cmp = 1;
+            else if (destRow is null) cmp = -1;
+            else cmp = CompareRowKeys(sourceRow, destRow, pkIndices);
+
+            if (cmp == 0)
+            {
+                if (!RowsEqual(sourceRow!, destRow!)) mismatched++;
+                sourceRow = null;
+                if (await sourceReader.ReadAsync(cancellationToken)) { sourceRow = ReadRow(sourceReader); sourceRowCount++; }
+                destRow = null;
+                if (await destReader.ReadAsync(cancellationToken)) { destRow = ReadRow(destReader); destRowCount++; }
+            }
+            else if (cmp < 0)
+            {
+                missingInDest++;
+                sourceRow = null;
+                if (await sourceReader.ReadAsync(cancellationToken)) { sourceRow = ReadRow(sourceReader); sourceRowCount++; }
+            }
+            else
+            {
+                extraInDest++;
+                destRow = null;
+                if (await destReader.ReadAsync(cancellationToken)) { destRow = ReadRow(destReader); destRowCount++; }
+            }
+        }
+
+        return new TableCheckResult(tableName, sourceRowCount, destRowCount, missingInDest, extraInDest, mismatched);
+    }
+
+    private static async Task<List<string>> GetPrimaryKeyColumnsAsync(
+        MySqlConnection conn,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        var pkColumns = new List<string>();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = @tableName AND CONSTRAINT_NAME = 'PRIMARY'
+            ORDER BY ORDINAL_POSITION
+            """;
+        cmd.Parameters.AddWithValue("@tableName", tableName);
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            pkColumns.Add(reader.GetString(0));
+        return pkColumns;
+    }
+
+    private static async Task<long> GetRowCountAsync(
+        MySqlConnection conn,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM `{tableName}`";
+        var result = await cmd.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt64(result);
+    }
+
+    private static object?[] ReadRow(MySqlDataReader reader)
+    {
+        var row = new object?[reader.FieldCount];
+        for (int i = 0; i < row.Length; i++)
+            row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+        return row;
+    }
+
+    private static int CompareRowKeys(object?[] row1, object?[] row2, int[] pkIndices)
+    {
+        foreach (var idx in pkIndices)
+        {
+            var v1 = row1[idx];
+            var v2 = row2[idx];
+
+            if (v1 is null && v2 is null) continue;
+            if (v1 is null) return -1;
+            if (v2 is null) return 1;
+
+            if (v1 is IComparable comparable)
+            {
+                try
+                {
+                    int result = comparable.CompareTo(Convert.ChangeType(v2, v1.GetType()));
+                    if (result != 0) return result;
+                    continue;
+                }
+                catch { }
+            }
+
+            int strCmp = string.Compare(v1.ToString(), v2.ToString(), StringComparison.Ordinal);
+            if (strCmp != 0) return strCmp;
+        }
+        return 0;
+    }
+
+    private static bool RowsEqual(object?[] row1, object?[] row2)
+    {
+        if (row1.Length != row2.Length) return false;
+        for (int i = 0; i < row1.Length; i++)
+        {
+            var v1 = row1[i];
+            var v2 = row2[i];
+            if (v1 is null && v2 is null) continue;
+            if (v1 is null || v2 is null) return false;
+            if (!v1.Equals(v2)) return false;
+        }
+        return true;
+    }
+}
+
+public record TableCheckResult(
+    string TableName,
+    long SourceRowCount,
+    long DestinationRowCount,
+    long MissingInDestination,
+    long ExtraInDestination,
+    long Mismatched,
+    bool HasPrimaryKey = true)
+{
+    public bool IsMatch =>
+        MissingInDestination == 0 && ExtraInDestination == 0 && Mismatched == 0;
 }
