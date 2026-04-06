@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.37012.4 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CopyMysqlData", "CopyMysqlData\CopyMysqlData.csproj", "{FD6B2D9D-F63A-8B7B-EED3-7A68DBCDE51C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FD6B2D9D-F63A-8B7B-EED3-7A68DBCDE51C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FD6B2D9D-F63A-8B7B-EED3-7A68DBCDE51C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FD6B2D9D-F63A-8B7B-EED3-7A68DBCDE51C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FD6B2D9D-F63A-8B7B-EED3-7A68DBCDE51C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {AC59E590-1277-4D04-8A6C-594F1C6BF9EA}
+	EndGlobalSection
+EndGlobal

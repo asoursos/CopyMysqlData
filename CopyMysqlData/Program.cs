@@ -13,6 +13,15 @@ bool preserveIdentity = true;
 if (args.Length >= 4)
 {
     command = args[0];
+    if (command.Equals("version", StringComparison.OrdinalIgnoreCase))
+    {
+        var version = Assembly.GetEntryAssembly()
+            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? "unknown";
+        Console.WriteLine($"CopyMysqlData v{version}");
+        return 0;
+    }
+
     sourceConnectionString = args[1];
     destinationConnectionString = args[2];
     tableNames = args[3].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -42,15 +51,6 @@ else
         Console.Write("Preserve original IDs (auto-increment)? (Y/n): ");
         preserveIdentity = !(Console.ReadLine()?.Trim().Equals("n", StringComparison.OrdinalIgnoreCase) ?? false);
     }
-}
-
-if (command.Equals("version", StringComparison.OrdinalIgnoreCase))
-{
-    var version = Assembly.GetEntryAssembly()
-        ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-        ?.InformationalVersion ?? "unknown";
-    Console.WriteLine($"CopyMysqlData v{version}");
-    return 0;
 }
 
 if (string.IsNullOrWhiteSpace(command) ||
