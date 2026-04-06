@@ -10,15 +10,16 @@ string[] tableNames;
 bool truncate = false;
 bool preserveIdentity = true;
 
+var version = Assembly.GetEntryAssembly()
+            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? "unknown";
+Console.WriteLine($"CopyMysqlData v{version}");
+
 if (args.Length >= 4)
 {
     command = args[0];
     if (command.Equals("version", StringComparison.OrdinalIgnoreCase))
     {
-        var version = Assembly.GetEntryAssembly()
-            ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion ?? "unknown";
-        Console.WriteLine($"CopyMysqlData v{version}");
         return 0;
     }
 
