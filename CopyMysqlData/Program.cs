@@ -6,7 +6,7 @@ Console.WriteLine("=== MySQL Table Data Copier ===\n");
 
 string sourceConnectionString;
 string destinationConnectionString;
-string tableName;
+string[] tableNames;
 bool truncate;
 bool preserveIdentity;
 
@@ -14,20 +14,21 @@ if (args.Length >= 3)
 {
     sourceConnectionString = args[0];
     destinationConnectionString = args[1];
-    tableName = args[2];
+    tableNames = args[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     truncate = args.Contains("--truncate", StringComparer.OrdinalIgnoreCase);
     preserveIdentity = !args.Contains("--no-preserve-identity", StringComparer.OrdinalIgnoreCase);
 }
 else
 {
-    Console.Write("Source connection string      : ");
+    Console.Write("Source connection string          : ");
     sourceConnectionString = Console.ReadLine() ?? string.Empty;
 
-    Console.Write("Destination connection string : ");
+    Console.Write("Destination connection string     : ");
     destinationConnectionString = Console.ReadLine() ?? string.Empty;
 
-    Console.Write("Table name                    : ");
-    tableName = Console.ReadLine() ?? string.Empty;
+    Console.Write("Table name(s) (comma-separated)   : ");
+    tableNames = (Console.ReadLine() ?? string.Empty)
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     Console.Write("Truncate destination table before copy? (y/N): ");
     truncate = Console.ReadLine()?.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) ?? false;
@@ -38,30 +39,38 @@ else
 
 if (string.IsNullOrWhiteSpace(sourceConnectionString) ||
     string.IsNullOrWhiteSpace(destinationConnectionString) ||
-    string.IsNullOrWhiteSpace(tableName))
+    tableNames.Length == 0)
 {
-    Console.Error.WriteLine("Error: source connection string, destination connection string, and table name are all required.");
+    Console.Error.WriteLine("Error: source connection string, destination connection string, and at least one table name are all required.");
     return 1;
 }
 
-Console.WriteLine($"\nCopying table `{tableName}`...\n");
+var copier = new TableCopier(sourceConnectionString, destinationConnectionString);
 var stopwatch = Stopwatch.StartNew();
+int totalRowsCopied = 0;
+int exitCode = 0;
 
-try
+foreach (var tableName in tableNames)
 {
-    var copier = new TableCopier(sourceConnectionString, destinationConnectionString);
-    int rowsCopied = await copier.CopyTableAsync(tableName, truncate, preserveIdentity);
-    stopwatch.Stop();
-    Console.WriteLine($"\nDone! {rowsCopied} row(s) copied in {stopwatch.Elapsed.TotalSeconds:F2}s.");
-    return 0;
+    Console.WriteLine($"\nCopying table `{tableName}`...\n");
+    try
+    {
+        int rowsCopied = await copier.CopyTableAsync(tableName, truncate, preserveIdentity);
+        totalRowsCopied += rowsCopied;
+        Console.WriteLine($"  Table `{tableName}`: {rowsCopied} row(s) copied.");
+    }
+    catch (MySqlException ex)
+    {
+        Console.Error.WriteLine($"\nMySQL Error [{ex.ErrorCode}] on table `{tableName}`: {ex.Message}");
+        exitCode = 1;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"\nError on table `{tableName}`: {ex.Message}");
+        exitCode = 1;
+    }
 }
-catch (MySqlException ex)
-{
-    Console.Error.WriteLine($"\nMySQL Error [{ex.ErrorCode}]: {ex.Message}");
-    return 1;
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"\nError: {ex.Message}");
-    return 1;
-}
+
+stopwatch.Stop();
+Console.WriteLine($"\nDone! {totalRowsCopied} total row(s) copied across {tableNames.Length} table(s) in {stopwatch.Elapsed.TotalSeconds:F2}s.");
+return exitCode;
