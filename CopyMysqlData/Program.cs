@@ -1,5 +1,5 @@
 ﻿using CopyMysqlData;
-using System.Diagnostics;
+using System.Reflection;
 
 Console.WriteLine("=== MySQL Table Data Copier ===\n");
 
@@ -21,7 +21,7 @@ if (args.Length >= 4)
 }
 else
 {
-    Console.Write("Command (copy-tables / check-data)           : ");
+    Console.Write("Command (copy-tables / check-data / version) : ");
     command = Console.ReadLine()?.Trim() ?? string.Empty;
 
     Console.Write("Source connection string                     : ");
@@ -44,6 +44,15 @@ else
     }
 }
 
+if (command.Equals("version", StringComparison.OrdinalIgnoreCase))
+{
+    var version = Assembly.GetEntryAssembly()
+        ?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+        ?.InformationalVersion ?? "unknown";
+    Console.WriteLine($"CopyMysqlData v{version}");
+    return 0;
+}
+
 if (string.IsNullOrWhiteSpace(command) ||
     string.IsNullOrWhiteSpace(sourceConnectionString) ||
     string.IsNullOrWhiteSpace(destinationConnectionString) ||
@@ -56,7 +65,7 @@ if (string.IsNullOrWhiteSpace(command) ||
 if (!command.Equals("copy-tables", StringComparison.OrdinalIgnoreCase) &&
     !command.Equals("check-data", StringComparison.OrdinalIgnoreCase))
 {
-    Console.Error.WriteLine($"Error: unknown command '{command}'. Valid commands are: copy-tables, check-data.");
+    Console.Error.WriteLine($"Error: unknown command '{command}'. Valid commands are: copy-tables, check-data, version.");
     return 1;
 }
 
