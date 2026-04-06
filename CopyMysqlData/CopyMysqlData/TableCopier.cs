@@ -28,10 +28,18 @@ public sealed class TableCopier
 
         if (truncateDestination)
         {
+            await using var fkOffCmd = destConn.CreateCommand();
+            fkOffCmd.CommandText = "SET FOREIGN_KEY_CHECKS = 0";
+            await fkOffCmd.ExecuteNonQueryAsync(cancellationToken);
+
             await using var truncateCmd = destConn.CreateCommand();
             truncateCmd.CommandText = $"TRUNCATE TABLE `{tableName}`";
             await truncateCmd.ExecuteNonQueryAsync(cancellationToken);
             Console.WriteLine($"Destination table `{tableName}` truncated.");
+
+            await using var fkOnCmd = destConn.CreateCommand();
+            fkOnCmd.CommandText = "SET FOREIGN_KEY_CHECKS = 1";
+            await fkOnCmd.ExecuteNonQueryAsync(cancellationToken);
         }
 
         var excludedColumns = await GetExcludedColumnsAsync(destConn, tableName, preserveIdentity, cancellationToken);
